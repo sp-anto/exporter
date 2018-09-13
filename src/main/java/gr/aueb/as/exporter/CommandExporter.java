@@ -3,11 +3,8 @@ package gr.aueb.as.exporter;
 import gr.aueb.as.exporter.enumeration.ArgumentType;
 import gr.aueb.as.exporter.model.Command;
 import gr.aueb.as.exporter.model.Option;
-import gr.aueb.as.exporter.util.Constants;
 import gr.aueb.as.exporter.util.ShellCommandExecutor;
-import org.apache.commons.io.IOUtils;
 
-import java.io.FileInputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -15,12 +12,11 @@ import java.util.regex.Pattern;
 
 public class CommandExporter {
     private static CommandExporter ourInstance = new CommandExporter();
-//    private static final String LTRACE = "ltrace -x 'getopt*' -L -F ltrace.conf -A 100 -o tmp.txt %s";
-    private static final String CALL_PREFIX = "getopt_long@libc.so.6(1";
-
-
+    private static final String INFO_INVOCATION = "info --show-options %s | tee \"-\"";
     private static final String MAN_INVOCATION = "man %s | tee \"-\"";
     private static final String WHATIS_INVOCATION = "whatis --long %s";
+    private static final String SYNOPSIS_ROW = "SYNOPSIS";
+    private static final String DESCRIPTION_ROW = "DESCRIPTION";
 
     public static CommandExporter getInstance() {
         return ourInstance;
@@ -29,84 +25,15 @@ public class CommandExporter {
     private CommandExporter() {
     }
 
-    public Command exportCommand(String commandName) throws Exception {
+    protected Command exportCommand(String commandName) throws Exception {
         System.out.println("############## > Exporting command " + commandName);
         Command command = new Command();
         command.setName(commandName);
-//
+
         handleWhatIsInvocation(command);
         handleManInvocation(command);
-
-//        final String shellCommand = String.format(LTRACE, commandName);
-
-//        try {
-//            Process process = Runtime.getRuntime().exec(shellCommand);
-//            process.waitFor();
-//
-//            process.destroy();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//        }
-
-//        String[] ltrace = new String[] { "ltrace", "-x", "'getopt*'", "-L", "-F", "ltrace.conf", "-A", "100", "-o", "tmp.txt", commandName };
-
-        final String result = ShellCommandExecutor.getInstance().executeCommand("./ltrace.sh " + commandName);
-//        ShellCommandExecutor.getInstance().executeCommand(shellCommand);
-//        ShellCommandExecutor.getInstance().executeCommand("ls");
-//        final String result = ShellCommandExecutor.getInstance().executeCommand("less tmp.txt | tee \"-\"");
-//        try (FileInputStream fileInputStream = new FileInputStream("tmp.out")) {
-//            result = IOUtils.toString(fileInputStream, "UTF-8");
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//        }
-//         final String result = Constants.MV_GETOPT;
-
-        // get line of getopt_long call
-        System.out.println("############## > GetOpt Call\n" + result);
-        String getoptCall = result.substring(0, result.indexOf("\n"));
-
-        // exclude text until optString param
-        Pattern patterUntilOptString = Pattern.compile("getopt_long@libc.so.6\\(\\d+, \\[\\s+], ");
-        Matcher mathcerUntilOptString = patterUntilOptString.matcher(getoptCall);
-        if (mathcerUntilOptString.find()) {
-            getoptCall = getoptCall.replace(mathcerUntilOptString.group(0), "");
-        }
-
-        String optString = null;
-        Pattern optStringPattern = Pattern.compile("\"[a-zA-Z+-:]+\", ");
-        Matcher optStringMatcher = optStringPattern.matcher(getoptCall);
-        if (optStringMatcher.find()) {
-            optString = optStringMatcher.group(0);
-            getoptCall = getoptCall.replace(optString, "");
-            optString = optString.substring(1, optString.length() - 3);
-        }
-
-        String longOptions = null;
-        Pattern longOptionsPattern = Pattern.compile("\\[.+]");
-        Matcher longOptionsMatcher = longOptionsPattern.matcher(getoptCall);
-        if (longOptionsMatcher.find()) {
-            longOptions = longOptionsMatcher.group(0);
-        }
-
-        if (longOptions.contains("{ nil, 0, nil, 0 }")) {
-            longOptions = longOptions.substring(0, longOptions.indexOf(", { nil, 0, nil, 0 }"));
-            longOptions += " ]";
-        } else {
-            System.out.println("END OF OPTIONS was not found");
-        }
-
-
-        List<Option> options = new ArrayList<>();
-        parseOptString(optString, options);
-        parseLongOptions(longOptions, options);
-
-
-
-        options.forEach(option -> OptionDescriptionExporter.getInstance().getTextForOption(commandName, option));
-//        options.forEach(System.out::println);
-
-        command.setOptions(options);
-
+        handleLtraceInvocation(command);
+        command.getOptions().forEach(option -> this.getTextForOption(commandName, option));
         System.out.println(command);
 
         return command;
@@ -152,9 +79,11 @@ public class CommandExporter {
             throw new Exception("LongOptions is null!");
         }
         Pattern optionPattern = Pattern.compile("\\{.+?,.+?,.+?,.+?}");
+        System.out.println(longOptions);
         Matcher optStringMatcher = optionPattern.matcher(longOptions);
         while (optStringMatcher.find()) {
             String longOption = optStringMatcher.group(0);
+            System.out.println(longOption);
             longOption = longOption.substring(1, longOption.length() -2);
             String[] elements = longOption.split(",");
             String name = elements[0].trim().replace("\"", "");
@@ -175,15 +104,9 @@ public class CommandExporter {
         }
     }
 
-    private static final String SYNOPSIS_ROW = "SYNOPSIS";
-    private static final String DESCRIPTION_ROW = "DESCRIPTION";
-
     private void handleManInvocation(Command command) {
         String manInvocation = String.format(MAN_INVOCATION, command.getName());
         String result = ShellCommandExecutor.getInstance().executeCommand(manInvocation);
-//        String result = Constants.MAN_INVOCATION;
-
-        // TODO: check if man excuted successfully
 
         String[] rows = result.split("\n");
         for(int i = 0 ; i < rows.length; i++) {
@@ -201,11 +124,11 @@ public class CommandExporter {
 
             if (DESCRIPTION_ROW.equals(row)) {
                 String description = "";
-                row = rows[++i];
+                row = rows[++i].trim();
+                System.out.println(row);
                 while (!row.equals("")) {
-                    String descRow = row.trim();
-                    description += descRow + " ";
-                    row = rows[++i];
+                    description += row + " ";
+                    row = rows[++i].trim();
                 }
                 command.setLongDescription(description.trim());
                 return;
@@ -216,11 +139,9 @@ public class CommandExporter {
     private void handleWhatIsInvocation(Command command) {
         String whatisInvocation = String.format(WHATIS_INVOCATION, command.getName());
         String result = ShellCommandExecutor.getInstance().executeCommand(whatisInvocation);
-//        String result = "mv  (1)                - move (rename) files";
-System.out.println("What is result\n" + result);
+        System.out.println("What is result:\n" + result);
         if (result.contains("nothing appropriate")) {
             System.out.println("System can not extract documentation about command " + command.getName());
-            // TODO: throw an exception in order to stop execution
         }
 
         String[] rows = result.split("\n");
@@ -228,5 +149,111 @@ System.out.println("What is result\n" + result);
         String shortDescription = txt.trim();
 
         command.setShortDescription(shortDescription);
+    }
+
+    private void handleLtraceInvocation(Command command) throws Exception {
+        String commandName = command.getName();
+
+        System.out.println("Proceed with tracing getopt_log call for command " + commandName);
+        final String result = ShellCommandExecutor.getInstance().executeCommand("./work/ltrace.sh " + commandName);
+
+        // get line of getopt_long call
+        System.out.println("############## > GetOpt Call\n" + result);
+        String getoptCall = result.substring(0, result.indexOf("\n"));
+
+        // exclude text until optString param
+        Pattern patterUntilOptString = Pattern.compile("getopt_long@libc.so.6\\(\\d+, \\[\\s+], ");
+        Matcher mathcerUntilOptString = patterUntilOptString.matcher(getoptCall);
+        if (mathcerUntilOptString.find()) {
+            String replace = mathcerUntilOptString.group(0);
+            getoptCall = getoptCall.replace(replace, "");
+            System.out.println("After replacement!: " + getoptCall);
+        }
+
+        String optString = null;
+        Pattern optStringPattern = Pattern.compile("\".*?\", ");
+        Matcher optStringMatcher = optStringPattern.matcher(getoptCall);
+        if (optStringMatcher.find()) {
+            optString = optStringMatcher.group(0);
+            System.out.println("OptString: " + optString);
+            getoptCall = getoptCall.replace(optString, "");
+            optString = optString.substring(1, optString.length() - 3);
+        }
+
+        String longOptions = null;
+        Pattern longOptionsPattern = Pattern.compile("\\[.+]");
+        System.out.println("Getopt:" + getoptCall);
+        Matcher longOptionsMatcher = longOptionsPattern.matcher(getoptCall);
+        if (longOptionsMatcher.find()) {
+            longOptions = longOptionsMatcher.group(0);
+        }
+
+        List<Option> options = new ArrayList<>();
+        parseOptString(optString, options);
+        parseLongOptions(longOptions, options);
+
+        // remove equivalent options
+        List<Option> optionsToRemove = new ArrayList<>();
+        for (Option option : options) {
+            if (option.getEquivalent() != null) {
+                for (Option option1 : options) {
+                    if (option1.getName().equals(option.getEquivalent())) {
+                        optionsToRemove.add(option1);
+                        break;
+                    }
+                }
+            }
+        }
+        options.removeAll(optionsToRemove);
+        command.setOptions(options);
+    }
+
+    private void getTextForOption(String command, Option option) {
+        String infoInvocation = String.format(INFO_INVOCATION, command);
+        String infoResult = ShellCommandExecutor.getInstance().executeCommand(infoInvocation);
+
+        System.out.println(option);
+
+        String textToFind = "-" + option.getName();
+        if (option.isLong()) {
+            textToFind = "-" + textToFind;
+        }
+
+        Pattern optionPattern = Pattern.compile("‘" + textToFind + ".*?’\n");
+        Matcher optStringMatcher = optionPattern.matcher(infoResult);
+        if (optStringMatcher.find()) {
+            textToFind = optStringMatcher.group(0);
+            System.out.println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ >> " + textToFind);
+        } else {
+            textToFind = "‘" + textToFind + "’\n";
+        }
+
+        int indexOfOption = infoResult.indexOf(textToFind);
+        if (indexOfOption > 0) {
+            String info = infoResult.substring(infoResult.indexOf(textToFind));
+            String[] rows = info.split("\n");
+            String description = "";
+            int pos = 0;
+            boolean read = true;
+            while (read && pos < rows.length) {
+                String text = rows[pos];
+                if (text.equals("")) {
+                    read = false;
+                } else if (!text.startsWith("‘-")) {
+                    text = text.trim();
+                    description += text + " ";
+                    pos++;
+                } else {
+                    pos++;
+                }
+            }
+
+            if (description.contains("*Note") && description.contains("::.")) {
+                String noteText = description.substring(description.indexOf("*Note"), description.indexOf("::.") + 3);
+                description = description.replace(noteText, "");
+            }
+            description = description.trim();
+            option.setDescription(description);
+        }
     }
 }
